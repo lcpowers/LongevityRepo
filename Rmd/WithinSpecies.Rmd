@@ -1,0 +1,292 @@
+---
+title: "Within Species"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Rmd set-up
+```{r wd, message=FALSE}
+rm(list=ls())
+setwd("~/Desktop/CurrentProjects/LHSproject/Rmd/")
+```
+
+
+```{r packages, message=FALSE}
+
+library(Rcompadre)
+library(popbio)
+library(tidyverse)
+library(lme4)
+
+rm(list=ls())
+```
+
+Bring in compadre db
+```{r getCompadre, message=FALSE}
+# Get most recent database
+compadrefull <- cdb_fetch("compadre") %>% 
+  cdb_flag() # Flag incomplete entries
+
+# Remove incomplete entries
+compadredb <- subset(compadrefull, check_NA_A == FALSE & check_ergodic == TRUE) %>% # Remove entries with missing info
+  filter(!is.na(Altitude)&!is.na(Lat)&OrganismType=='Herbaceous perennial') %>%  # Remove entries with missing elevation and latitude
+  filter(MatrixTreatment=="Unmanipulated"|is.na(MatrixTreatment)) %>%
+  filter(MatrixFec=="Yes"|is.na(MatrixFec)) %>% 
+  filter(ProjectionInterval==1) %>% 
+  filter(!is.na(Ecoregion)) %>% 
+  filter(MatrixComposite=='Mean')
+
+
+```
+
+
+```{r filterCompadre, message=FALSE}
+compadre_df <- as.data.frame(compadredb)
+elev_outliers <- compadre_df %>% filter(Altitude>3000)
+hist(compadre_df$Altitude[compadre_df$Altitude>3000],breaks=50)
+
+# Fix two--The original values did't seem to be in meters or feet, but are not in meters
+compadredb$Altitude[compadredb$Genus=='Leontopodium'&compadredb$MatrixPopulation=="Arpalle"]=2650
+compadredb$Altitude[compadredb$Genus=='Leontopodium'&compadredb$MatrixPopulation=="Dotse"]=2492
+
+rm(elev_outliers)
+
+matrixcomposite <- as.data.frame(table(compadre_df$MatrixComposite))
+studyduration <- as.data.frame(table(as.numeric(compadre_df$StudyDuration)))
+matdimension <- as.data.frame(table(compadre_df$MatrixDimension))
+# projinterval <- as.data.frame(table(compadre_df$ProjectionInterval))
+# table(compadre_df$MatrixTreatment)
+```
+
+List of species that have at least two populations in database (only 1 excluded with this filter)
+```{r speciesList}
+# Get list of species that have more than one matrix in database
+species_list <- as.data.frame(table(compadredb$Genus,compadredb$Species)) %>% 
+  filter(Freq>=1)
+
+colnames(species_list)<-c("genus","species","count")
+# 179 species with more than 1 model
+```
+
+Build out species list with min and max elevation, plant family, and plant type
+```{r moreSpeciesInfo}
+
+# Plant info
+species_list$family <- NA
+species_list$Ecoregion <- NA
+
+# Elevation info
+species_list$min.elev <- NA
+species_list$max.elev <- NA
+
+# Latitude info
+species_list$min.lat <- NA
+species_list$max.lat <- NA
+
+for(rowi in 1:nrow(species_list)){
+  
+  # Subset to species in rowi
+  species_tmp <- subset(compadredb, Genus == species_list$genus[rowi] & Species == species_list$species[rowi])
+  
+  species_list$family[rowi] <- species_tmp$Family[1]
+  species_list$Ecoregion[rowi] <- species_tmp$Ecoregion[1]
+ 
+  species_list$min.elev[rowi] <- min(species_tmp$Altitude, na.rm=T)
+  species_list$max.elev[rowi] <- max(species_tmp$Altitude, na.rm=T)
+  
+  species_list$min.lat[rowi] <- min(species_tmp$Lat, na.rm=T)
+  species_list$max.lat[rowi] <- max(species_tmp$Lat, na.rm=T)
+  
+}
+
+species_list$elev.diff <- species_list$max.elev-species_list$min.elev
+species_list$lat.diff <- species_list$max.lat-species_list$min.lat
+rm(rowi,species_tmp)
+
+
+```
+
+## Elevation
+Elevation subset
+```{r elevSubset}
+
+elev_species <- filter(species_list, elev.diff >= 200)
+# 54 species
+
+elev_subset <- compadredb %>% 
+  filter(Species%in%elev_species$species) %>% 
+  filter(Genus%in%elev_species$genus) 
+
+elev_df <- as.data.frame(elev_subset)
+
+```
+
+
+```{r}
+lifespan <- function(nx){
+  nclasses=dim(nx)[1]
+  vec=c(100,rep(0,(nclasses-1)))
+  nx[1,]=0
+  jj=1
+  while (sum(vec)>1){
+    vec=nx%*%vec
+    jj=jj+1
+#print(sum(vec))
+    }
+return(jj)
+}
+```
+
+
+Start
+```{r elevLoop}
+
+initial_popsize <- 10000
+elev_full_df <- NULL
+
+for(ii in 1:length(elev_subset$mat)){
+  
+  tmp <- elev_subset[ii]
+  fullmat <- matA(tmp$mat)[[1]]
+  growthmat <- matU(tmp$mat)[[1]]
+  
+  good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
+                          sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
+                          any(is.na(growthmat))|
+                          any(growthmat==1),
+                          FALSE,
+                          TRUE)
+
+  if(good_growthmat){
+
+    initialvector <- rep(0,ncol(growthmat))
+    initialvector[2]<-initial_popsize
+  
+    tmp.proj <- pop.projection(A = growthmat,n = initialvector,iterations = 5000)
+    tmp.pop.size <- round(tmp.proj$pop.sizes)
+    tmp.lam <- lambda(fullmat)
+    tmp.T <- generation.time(fullmat)
+    tmp.NRR <- net.reproductive.rate(fullmat)
+    
+    # Find the proportion of the initial population remaining at each timestep
+    remainingpop_SC2 <- tmp.pop.size/initial_popsize
+    
+    # At what timestep is less than 50% of the initial population remaining?
+    mean_long <- round(min(which(remainingpop_SC2<0.5)))
+    if(mean_long==Inf) print(c(ii,"Inf mean"))
+    
+    # When is less than 95% of the initial population remaining
+    max_long <- round(min(which(remainingpop_SC2<0.01)))
+    if(max_long==Inf) print(c(ii,"Inf max"))
+    
+    tmp_df <- data.frame(species=paste(tmp$Genus,tmp$Species,sep = "."),
+                          elevation=tmp$Altitude,
+                          mean_longevity=mean_long,
+                          max_longevity=max_long,
+                          gt = tmp.T,
+                          NRR = tmp.NRR,
+                          lambda=tmp.lam,
+                          eco_region = tmp$Ecoregion,
+                          matdim = tmp$MatrixDimension)
+    elev_full_df <- rbind(elev_full_df,tmp_df)
+    
+    rm(tmp,fullmat,growthmat,initialvector,tmp_df,max_long,mean_long,remainingpop_SC2,tmp.pop.size)
+  }
+  
+}
+
+
+elev_df <- elev_full_df %>% 
+  filter(mean_longevity!=Inf&max_longevity!=Inf) %>% 
+  filter(lambda<1.1&lambda>0.9)
+elev_df$species <- as.factor(elev_df$species)
+
+elev_df <- elev_df %>% 
+  group_by(species,elevation,eco_region,matdim) %>% 
+  summarize(mean_longevity=mean(mean_longevity),
+            max_longevity=mean(max_longevity))
+
+ggplot(elev_df,aes(x=elevation,y=mean_longevity))+
+  geom_point(aes(color=species))+
+  geom_smooth(method='lm')+
+  theme_classic()
+
+lm <- lmer(mean_longevity~elevation + (1|species) + (1|eco_region) + (1|matdim),data = elev_df)
+summary(lm)
+```
+
+
+```{r}
+
+silene <- filter(compadredb,Genus=="Silene") %>% 
+  filter(Species=='acaulis') %>% 
+  as.data.frame()
+
+silene_output <- NULL
+
+for(ii in 1:length(silene$mat)){
+  
+  tmp <- silene[ii]
+  fullmat <- matA(silene$mat)[[1]]
+  growthmat <- matU(silene$mat)[[1]]
+  
+  good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
+                          sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
+                          any(is.na(growthmat))|
+                          any(growthmat==1),
+                          FALSE,
+                          TRUE)
+
+  if(good_growthmat){
+
+    initialvector <- rep(0,ncol(growthmat))
+    initialvector[2] <- initial_popsize
+  
+    tmp.proj <- pop.projection(A = growthmat,n = initialvector,iterations = 5000)
+    tmp.pop.size <- round(tmp.proj$pop.sizes)
+    tmp.lam <- lambda(fullmat)
+    tmp.T <- generation.time(fullmat)
+    tmp.NRR <- net.reproductive.rate(fullmat)
+    
+    # Find the proportion of the initial population remaining at each timestep
+    remainingpop_SC2 <- tmp.pop.size/initial_popsize
+    
+    # At what timestep is less than 50% of the initial population remaining?
+    mean_long <- round(min(which(remainingpop_SC2<0.5)))
+    if(mean_long==Inf) print(c(ii,"Inf mean"))
+    
+    # When is less than 95% of the initial population remaining
+    max_long <- round(min(which(remainingpop_SC2<0.01)))
+    if(max_long==Inf) print(c(ii,"Inf max"))
+    
+    tmp_df <- data.frame(elevation=tmp$Altitude,
+                          mean_longevity=mean_long,
+                          max_longevity=max_long,
+                          gt = tmp.T,
+                          NRR = tmp.NRR,
+                          lambda=tmp.lam,
+                          eco_region = tmp$Ecoregion,
+                          matdim = tmp$MatrixDimension)
+    silene_output <- rbind(silene_output,tmp_df)
+    
+    rm(tmp,fullmat,growthmat,initialvector,tmp_df,max_long,mean_long,remainingpop_SC2,tmp.pop.size)
+  }
+  
+}
+
+
+plot(silene_output$elevation,silene_output$mean_longevity)
+
+```
+
+
+
+
+
+
+
+

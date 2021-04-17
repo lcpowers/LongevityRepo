@@ -1,0 +1,162 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Life History Seminar Project Prospectus
+### Claire Powers
+
+```{r loadpackages, message=FALSE}
+
+rm(list=ls())
+
+library(Rcompadre)
+library(popbio)
+library(tidyverse)
+
+```
+
+#### Download compadre Database
+```{r getCompadre, message=FALSE, warning=FALSE}
+
+# Get most recent database
+compadrefull <- cdb_fetch("compadre") %>% 
+  cdb_flag() # Flag incomplete entries
+
+# Remove incomplete entries
+compadredb <- subset(compadrefull, check_NA_A == FALSE & check_ergodic == TRUE) %>% # Remove entries with missing info
+  filter(!is.na(Altitude)&!is.na(Lat)&OrganismType=='Herbaceous perennial') # Remove entries with missing elevation and latitude
+
+# Get list of species that have more than one matrix in database
+species_list <- as.data.frame(table(compadredb$Genus,compadredb$Species)) %>% 
+  filter(Freq>=2)
+species_check <- as.data.frame(table(db_filter$Genus,db_filter$Species)) %>% 
+  filter(Freq>0)
+
+sum(species_list$Freq)
+
+colnames(species_list)<-c("genus","species","count")
+# 375 species with more than 1 model
+
+```
+
+
+```{r}
+
+# Full dataset
+hist(compadredb$Altitude,breaks=30)
+hist(compadredb$Lat,breaks=30)
+
+# Species subset
+db_filter <- filter(compadredb,Genus%in%species_list$genus & Species%in%species_list$species)
+hist(db_filter$Altitude,breaks=30)
+db_filter <- filter(compadredb,Genus%in%species_list$genus & Species%in%species_list$species)
+hist(db_filter$Lat,breaks=30)
+
+```
+
+
+#### Build out species list with min and max elevation, plant family, and plant type
+```{r moreSpeciesInfo}
+
+# Plant info
+species_list$family <- NA
+species_list$Ecoregion <- NA
+
+# Elevation info
+species_list$min.elev <- NA
+species_list$max.elev <- NA
+
+# Latitude info
+species_list$min.lat <- NA
+species_list$max.lat <- NA
+
+for(rowi in 1:nrow(species_list)){
+  
+  # Subset to species in rowi
+  species_tmp <- subset(compadredb, Genus == species_list$genus[rowi] & Species == species_list$species[rowi])
+  
+  species_list$family[rowi] <- species_tmp$Family[1]
+  species_list$Ecoregion[rowi] <- species_tmp$Ecoregion[1]
+ 
+  species_list$min.elev[rowi] <- min(species_tmp$Altitude, na.rm=T)
+  species_list$max.elev[rowi] <- max(species_tmp$Altitude, na.rm=T)
+  
+  species_list$min.lat[rowi] <- min(species_tmp$Lat, na.rm=T)
+  species_list$max.lat[rowi] <- max(species_tmp$Lat, na.rm=T)
+  
+}
+
+species_list$elev.diff <- species_list$max.elev-species_list$min.elev
+species_list$lat.diff <- species_list$max.lat-species_list$min.lat
+```
+
+#### Elevation subset
+```{r elevSubset}
+
+elev_subset <- filter(species_list,elev.diff >= 100)
+# 60 species
+
+
+sum(elev_subset$count)
+# 1662 individual matrices
+```
+
+#### Latitude subset
+```{r latSubset}
+#### Latitude
+lat_subset <- filter(species_list,lat.diff > 1)
+# 35 species
+
+sum(lat_subset$count)
+# 867 matrices
+```
+
+\newpage
+
+### Find longevity estimates: Example
+```{r estLongevity}
+
+## First species in the elevation subset happened to be Silene!
+silene <- filter(compadredb, Species==elev_subset$species[1], Genus==elev_subset$genus[1])
+
+# Survival-Growth matrix
+silene_growthMat <- matU(silene[2])[[1]]
+head(silene_growthMat)
+
+# 12 stage-classes so initial pop vector with 12 entries, but only one > 0
+initial_size <- 100
+initial_vector <- c(0,initial_size,0,0,0,0,0,0,0,0,0,0)
+
+silene.proj <- pop.projection(A = silene_growthMat,n = initial_vector,iterations = 1000)
+silene_pop.size <- silene.proj$pop.sizes
+# silene_pop.size
+
+# Find the proportion of the initial population remaining at each timestep
+remainingpop_SC2 <- silene_pop.size/initial_size
+
+# At what timestep is less than 50% of the initial population remaining?
+min(which(remainingpop_SC2<0.5))
+# 25
+
+# When is less than 95% of the initial population remaining
+min(which(remainingpop_SC2<0.05))
+# 250
+
+```
+
+
+
+
+
+
+
+
+
+
+
