@@ -1,0 +1,245 @@
+---
+title: "LatitudeAnalysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r packagesandsetup}
+rm(list=ls())
+setwd("~/Desktop/CurrentProjects/LHSproject/Rmd/")
+
+library(Rcompadre)
+library(popbio)
+library(tidyverse)
+library(lme4)
+```
+
+Bring in Compadre DB and filter
+```{r fetchcompadre}
+
+#  Fetch most recent database
+compadrefull <- cdb_fetch("compadre") %>% 
+  cdb_flag() # Flag incomplete entries
+
+# Remove incomplete entries
+compadredb <- compadrefull %>% 
+  filter(check_NA_A==FALSE & check_NA_U==FALSE & check_singular_U==FALSE) %>% # Remove entries without full mat or survival mat
+  filter(!is.na(Altitude)) %>%  # Remove entries with missing elevation 
+  filter(OrganismType=='Herbaceous perennial') %>% # only keep herbaceous perennials
+  filter(MatrixTreatment=="Unmanipulated"|is.na(MatrixTreatment)) %>% # Only keep matrices without treatments
+  filter(MatrixFec=="Yes"|is.na(MatrixFec)) %>% 
+  filter(ProjectionInterval==1) %>% # Keep matrices with interval of 1 (year?)
+  filter(!is.na(Ecoregion)) %>% # Remove if no ecoregion
+  filter(MatrixComposite=='Mean') %>% 
+  filter(!is.na(MatrixCriteriaAge))
+
+```
+
+Check for latitude outliers and fix
+```{r fixlatitude}
+compadre_df <- as.data.frame(compadredb) 
+hist(compadre_df$Lat,breaks=50)
+
+## looks fine. Checked that Neg latitudes and country names make sense as well
+```
+
+Get list of species for elevation analyses
+```{r elevspplist}
+
+species_list <- as.data.frame(table(compadredb$Genus,compadredb$Species)) %>% 
+  filter(Freq>=1)
+colnames(species_list)<-c("genus","species","count")
+```
+
+Add latitude/longitude to species_list df
+```{r latdiffilter}
+
+# # Latitude info
+# species_list$min.lat <- NA
+# species_list$max.lat <- NA
+# 
+# # Elevation info
+# species_list$min.long <- NA
+# species_list$max.long <- NA
+# 
+# 
+# for(rowi in 1:nrow(species_list)){
+#   
+#   # Subset to species in rowi
+#   species_tmp <- subset(compadredb, Genus == species_list$genus[rowi] & Species == species_list$species[rowi])
+#  
+#   species_list$min.elev[rowi] <- min(species_tmp$Altitude, na.rm=T)
+#   species_list$max.elev[rowi] <- max(species_tmp$Altitude, na.rm=T)
+#   
+#   
+# }
+# 
+# species_list$elev.diff <- species_list$max.elev-species_list$min.elev
+# rm(rowi,species_tmp)
+
+# Can use this to filter for species that have multiple populations occuring at different elevations
+```
+
+#Dan's lifespan function
+```{r Danlifespancode}
+
+lifespan <- function(nx,Ninit,percentile){
+  nclasses=dim(nx)[1]
+  vec=c(Ninit,rep(0,(nclasses-1)))
+  nx[1,]=0
+  jj=1
+  while (sum(vec)>Ninit*percentile){
+    vec=nx%*%vec
+    jj=jj+1
+#print(sum(vec))
+  }
+  rm(nclasses,vec,nx)
+return(jj)
+}
+
+```
+
+
+```{r longevityLoop}
+
+initial_popsize <- 500
+longevity_df <- NULL
+
+for(ii in 1:length(compadredb$mat)){
+  
+  tmp <- compadredb[ii]
+  fullmat <- matA(tmp$mat)[[1]]
+  growthmat <- matU(tmp$mat)[[1]]
+  
+  if(tmp$MatrixCriteriaAge=='YES'){
+    
+    growthmat[1,] <- 0
+    
+  } else{
+    
+    growthmat[1,2:ncol(growthmat)] <- 0
+    
+  }
+  clonemat <- matC(tmp$mat)[[1]]
+  
+  if(sum(clonemat)>0) print(sum(clonemat))
+  
+  good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
+                          sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
+                          any(is.na(growthmat))|
+                          any(growthmat==1),
+                          FALSE,
+                          TRUE)
+
+  if(good_growthmat){
+
+    initialvector <- rep(0,ncol(growthmat))
+    initialvector[1]<-initial_popsize
+  
+    tmp.proj <- pop.projection(A = growthmat,n = initialvector,iterations = 5000)
+    tmp.pop.size <- round(tmp.proj$pop.sizes)
+    tmp.lam <- lambda(fullmat)
+    # tmp.T <- generation.time(fullmat)
+    tmp.NRR <- net.reproductive.rate(fullmat)
+    
+    # Find the proportion of the initial population remaining at each timestep
+    remainingpop_SC2 <- tmp.pop.size/initial_popsize
+    
+    # At what timestep is less than 50% of the initial population remaining?
+    mean_long <- round(min(which(remainingpop_SC2<0.5)))
+    if(mean_long==Inf) print(c(ii,"Inf mean"))
+    
+    # When is less than 95% of the initial population remaining
+    max_long <- round(min(which(remainingpop_SC2<0.01)))
+    if(max_long==Inf) print(c(ii,"Inf max"))
+    
+    tmp_df <- data.frame(species=paste(tmp$Genus,tmp$Species,sep = "."),
+                          latitude=tmp$Lat,
+                          longitude=tmp$Lon,
+                          mean_longevity=mean_long,
+                          mean_longevity2 = lifespan(growthmat,initial_popsize,0.5),
+                          max_longevity=max_long,
+                          max_longevity2 = lifespan(growthmat,initial_popsize,0.01),
+                         #  gentime = round(tmp.T),
+                          NRR = round(tmp.NRR),
+                          lambda=round(tmp.lam,6),
+                          eco_region = tmp$Ecoregion,
+                          matdim = tmp$MatrixDimension)
+   longevity_df <- rbind(longevity_df,tmp_df)
+    
+    rm(tmp,fullmat,growthmat,initialvector,tmp_df,max_long,mean_long,remainingpop_SC2,tmp.pop.size,tmp.lam,tmp.NRR,good_growthmat,clonemat)
+  }
+  
+}
+
+```
+
+Visualize at results
+```{r visresults}
+
+results_df <- longevity_df %>% 
+  filter(lambda<1.1 & lambda>0.1)
+
+ggplot(results_df,aes(x=abs(latitude),y=mean_longevity))+
+  # geom_label(aes(label=species))+
+  geom_point()+
+  ggtitle("Mean Lifespan")+
+  # geom_smooth(method="lm")+
+  theme_bw()
+
+ggplot(results_df,aes(x=latitude,y=max_longevity))+
+  # geom_label(aes(label=species))+
+  geom_point()+
+  ggtitle("Maximum lifespan")+
+  # geom_smooth(method='lm')+
+  theme_bw()
+
+agg_results_df <- results_df %>% 
+  group_by(species,latitude,longitude,eco_region,matdim) %>% 
+  summarize(mean_longevity = mean(mean_longevity),
+            max_longevity = mean(max_longevity))
+
+ggplot(agg_results_df, aes(x=latitude,y=mean_longevity))+
+  geom_point()+
+  # geom_label(aes(label=species))+
+  geom_smooth(method = "lm")+
+  ggtitle("Species-latitude aggregated mean lifespan")+
+  theme_classic()
+
+ggplot(subset(agg_results_df,latitude>10), aes(x=abs(latitude),y=max_longevity))+
+  geom_point()+
+  # geom_label(aes(label=species))+
+  geom_smooth(method = "lm")+
+  ggtitle("Species-latitude aggregated maximum lifespan")+
+  theme_classic()
+```
+
+# Mini results analysis
+```{r analysis}
+agg_results_df$latitude <- abs(agg_results_df$latitude)
+colnames(agg_results_df)
+
+hist(agg_results_df$mean_longevity,breaks=30)
+hist(agg_results_df$max_longevity,breaks=30)
+hist(agg_results_df$latitude,breaks=30)
+
+max_ols <- lm(max_longevity~latitude,data=agg_results_df)
+max_lm <- lmer(max_longevity~latitude + (1|matdim) + (1|eco_region) + (1|species) + (1|longitude),data=agg_results_df)
+par(mfrow=c(2,2))
+plot(max_ols)
+
+mean_ols <- lm(mean_longevity~latitude,data=agg_results_df)
+mean_lm <- lmer(mean_longevity~latitude + longitude + (1|matdim) + (1|eco_region) + (1|species), data=agg_results_df)
+
+par(mfrow=c(2,2))
+plot(mean_ols)
+```
+
+
+
+
+

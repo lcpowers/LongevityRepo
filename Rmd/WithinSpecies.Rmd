@@ -107,7 +107,6 @@ species_list$elev.diff <- species_list$max.elev-species_list$min.elev
 species_list$lat.diff <- species_list$max.lat-species_list$min.lat
 rm(rowi,species_tmp)
 
-
 ```
 
 ## Elevation
@@ -217,70 +216,6 @@ ggplot(elev_df,aes(x=elevation,y=mean_longevity))+
 
 lm <- lmer(mean_longevity~elevation + (1|species) + (1|eco_region) + (1|matdim),data = elev_df)
 summary(lm)
-```
-
-
-```{r}
-
-silene <- filter(compadredb,Genus=="Silene") %>% 
-  filter(Species=='acaulis') %>% 
-  as.data.frame()
-
-silene_output <- NULL
-
-for(ii in 1:length(silene$mat)){
-  
-  tmp <- silene[ii]
-  fullmat <- matA(silene$mat)[[1]]
-  growthmat <- matU(silene$mat)[[1]]
-  
-  good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
-                          sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
-                          any(is.na(growthmat))|
-                          any(growthmat==1),
-                          FALSE,
-                          TRUE)
-
-  if(good_growthmat){
-
-    initialvector <- rep(0,ncol(growthmat))
-    initialvector[2] <- initial_popsize
-  
-    tmp.proj <- pop.projection(A = growthmat,n = initialvector,iterations = 5000)
-    tmp.pop.size <- round(tmp.proj$pop.sizes)
-    tmp.lam <- lambda(fullmat)
-    tmp.T <- generation.time(fullmat)
-    tmp.NRR <- net.reproductive.rate(fullmat)
-    
-    # Find the proportion of the initial population remaining at each timestep
-    remainingpop_SC2 <- tmp.pop.size/initial_popsize
-    
-    # At what timestep is less than 50% of the initial population remaining?
-    mean_long <- round(min(which(remainingpop_SC2<0.5)))
-    if(mean_long==Inf) print(c(ii,"Inf mean"))
-    
-    # When is less than 95% of the initial population remaining
-    max_long <- round(min(which(remainingpop_SC2<0.01)))
-    if(max_long==Inf) print(c(ii,"Inf max"))
-    
-    tmp_df <- data.frame(elevation=tmp$Altitude,
-                          mean_longevity=mean_long,
-                          max_longevity=max_long,
-                          gt = tmp.T,
-                          NRR = tmp.NRR,
-                          lambda=tmp.lam,
-                          eco_region = tmp$Ecoregion,
-                          matdim = tmp$MatrixDimension)
-    silene_output <- rbind(silene_output,tmp_df)
-    
-    rm(tmp,fullmat,growthmat,initialvector,tmp_df,max_long,mean_long,remainingpop_SC2,tmp.pop.size)
-  }
-  
-}
-
-
-plot(silene_output$elevation,silene_output$mean_longevity)
-
 ```
 
 
