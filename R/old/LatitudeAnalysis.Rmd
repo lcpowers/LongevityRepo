@@ -1,11 +1,12 @@
 ---
-title: "Elevation Analysis"
+title: "LatitudeAnalysis"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
 
 ```{r packagesandsetup}
 rm(list=ls())
@@ -38,20 +39,13 @@ compadredb <- compadrefull %>%
 
 ```
 
+Check for latitude outliers and fix
+```{r fixlatitude}
+compadre_df <- as.data.frame(compadredb) 
+hist(compadre_df$Lat,breaks=50)
 
-Fix elevation
-```{r fixelev, message=FALSE}
-compadre_df <- as.data.frame(compadredb)
-elev_outliers <- compadre_df %>% filter(Altitude>3000)
-hist(compadre_df$Altitude[compadre_df$Altitude>3000],breaks=50)
-
-# Fix two--The original values did't seem to be in meters or feet, but are not in meters
-compadredb$Altitude[compadredb$Genus=='Leontopodium'&compadredb$MatrixPopulation=="Arpalle"]=2650
-compadredb$Altitude[compadredb$Genus=='Leontopodium'&compadredb$MatrixPopulation=="Dotse"]=2492
-
-rm(elev_outliers)
+## looks fine. Checked that Neg latitudes and country names make sense as well
 ```
-
 
 Get list of species for elevation analyses
 ```{r elevspplist}
@@ -61,13 +55,16 @@ species_list <- as.data.frame(table(compadredb$Genus,compadredb$Species)) %>%
 colnames(species_list)<-c("genus","species","count")
 ```
 
+Add latitude/longitude to species_list df
+```{r latdiffilter}
 
-Add elevation to species_list df
-```{r elevdiffilter}
+# Latitude info
+species_list$min.lat <- NA
+species_list$max.lat <- NA
 
 # Elevation info
-species_list$min.elev <- NA
-species_list$max.elev <- NA
+species_list$min.long <- NA
+species_list$max.long <- NA
 
 
 for(rowi in 1:nrow(species_list)){
@@ -87,22 +84,6 @@ rm(rowi,species_tmp)
 # Can use this to filter for species that have multiple populations occuring at different elevations
 ```
 
-
-subset database for minimum elevation difference
-```{r subsetdbelevdiff}
-
-# 100 => 26 spp
-elev_diff_spp <- species_list %>% 
-  filter(elev.diff>100)
-
-compadredb_Esub <- compadredb %>% 
-  filter(Genus%in%elev_diff_spp$genus&Species%in%elev_diff_spp$species)
-
-# Check that subsetting worked correctly
-sum(elev_diff_spp$count)==length(compadredb_Esub$mat)
-```
-
-
 #Dan's lifespan function
 ```{r Danlifespancode}
 
@@ -120,7 +101,6 @@ lifespan <- function(nx,Ninit,percentile){
 return(jj)
 }
 
-lifespan(nx,100,0.01)
 ```
 
 
@@ -129,9 +109,9 @@ lifespan(nx,100,0.01)
 initial_popsize <- 500
 longevity_df <- NULL
 
-for(ii in 1:length(compadredb_Esub$mat)){
+for(ii in 1:length(compadredb$mat)){
   
-  tmp <- compadredb_Esub[ii]
+  tmp <- compadredb[ii]
   fullmat <- matA(tmp$mat)[[1]]
   growthmat <- matU(tmp$mat)[[1]]
   
@@ -178,7 +158,8 @@ for(ii in 1:length(compadredb_Esub$mat)){
     if(max_long==Inf) print(c(ii,"Inf max"))
     
     tmp_df <- data.frame(species=paste(tmp$Genus,tmp$Species,sep = "."),
-                          elevation=tmp$Altitude,
+                          latitude=tmp$Lat,
+                          longitude=tmp$Lon,
                           mean_longevity=mean_long,
                           mean_longevity2 = lifespan(growthmat,initial_popsize,0.5),
                           max_longevity=max_long,
@@ -203,57 +184,60 @@ Visualize at results
 results_df <- longevity_df %>% 
   filter(lambda<1.1 & lambda>0.1)
 
-ggplot(results_df,aes(x=elevation,y=mean_longevity))+
+ggplot(results_df,aes(x=abs(latitude),y=mean_longevity))+
   # geom_label(aes(label=species))+
   geom_point()+
   ggtitle("Mean Lifespan")+
+  # geom_smooth(method="lm")+
   theme_bw()
 
-ggplot(results_df,aes(x=elevation,y=max_longevity))+
+ggplot(results_df,aes(x=latitude,y=max_longevity))+
   # geom_label(aes(label=species))+
   geom_point()+
   ggtitle("Maximum lifespan")+
-  geom_smooth(method='lm')+
+  # geom_smooth(method='lm')+
   theme_bw()
 
 agg_results_df <- results_df %>% 
-  group_by(species,elevation,eco_region,matdim) %>% 
+  group_by(species,latitude,longitude,eco_region,matdim) %>% 
   summarize(mean_longevity = mean(mean_longevity),
             max_longevity = mean(max_longevity))
 
-ggplot(agg_results_df, aes(x=elevation,y=mean_longevity))+
+ggplot(agg_results_df, aes(x=latitude,y=mean_longevity))+
   geom_point()+
   # geom_label(aes(label=species))+
   geom_smooth(method = "lm")+
-  ggtitle("Species-Elevation aggregated mean lifespan")+
+  ggtitle("Species-latitude aggregated mean lifespan")+
   theme_classic()
 
-ggplot(agg_results_df, aes(x=elevation,y=max_longevity))+
+ggplot(subset(agg_results_df,latitude>10), aes(x=abs(latitude),y=max_longevity))+
   geom_point()+
   # geom_label(aes(label=species))+
   geom_smooth(method = "lm")+
-  ggtitle("Species-Elevation aggregated maximum lifespan")+
+  ggtitle("Species-latitude aggregated maximum lifespan")+
   theme_classic()
 ```
 
 # Mini results analysis
 ```{r analysis}
+agg_results_df$latitude <- abs(agg_results_df$latitude)
 colnames(agg_results_df)
 
-max_ols <- lm(max_longevity~elevation,data=agg_results_df)
-summary(max_ols)
+hist(agg_results_df$mean_longevity,breaks=30)
+hist(agg_results_df$max_longevity,breaks=30)
+hist(agg_results_df$latitude,breaks=30)
 
-max_lm <- lmer(max_longevity~elevation + (1|matdim) + (1|eco_region) + (1|species),data=agg_results_df)
-summary(max_lm)
+max_ols <- lm(max_longevity~latitude,data=agg_results_df)
+max_lm <- lmer(max_longevity~latitude + (1|matdim) + (1|eco_region) + (1|species) + (1|longitude),data=agg_results_df)
+par(mfrow=c(2,2))
+plot(max_ols)
 
-mean_ols <- lm(mean_longevity~elevation,data=agg_results_df)
-summary(mean_ols)
+mean_ols <- lm(mean_longevity~latitude,data=agg_results_df)
+mean_lm <- lmer(mean_longevity~latitude + longitude + (1|matdim) + (1|eco_region) + (1|species), data=agg_results_df)
 
-mean_lm <- lmer(mean_longevity~elevation + (1|matdim) + (1|eco_region) + (1|species),data=agg_results_df)
-mean_lm
+par(mfrow=c(2,2))
+plot(mean_ols)
 ```
-
-
 
 
 

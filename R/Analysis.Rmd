@@ -1,0 +1,472 @@
+---
+title: "Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load packages
+```{r packages}
+rm(list=ls())
+library(popbio)
+library(tidyverse)
+library(lme4)
+library(demogR)
+library(matrixcalc)
+library(corrplot)
+library(ggfortify)
+library(MASS)
+library(basicTrendline)
+library(viridis)
+library(sjPlot)
+
+source("Rmd/lifespan.R")
+```
+
+
+# Read in data
+```{r data}
+
+min_elev_diff=0
+elev_db <- readRDS(paste0("Datasets/elevation_",min_elev_diff,".rds")) %>% as.data.frame() %>% filter(MatrixDimension==2)
+
+min_lat_diff=0
+lat_db <- readRDS(paste0("Datasets/latitude_",min_lat_diff,".rds"))
+```
+
+
+# Elevation population metrics
+```{r elev_longevityLoop}
+
+min_elev_diff=0
+elev_db <- readRDS(paste0("Datasets/elevation_",min_elev_diff,".rds"))
+
+# min_lat_diff=0
+# lat_db <- readRDS(paste0("Datasets/latitude_",min_lat_diff,".rds"))
+
+init.popsize=1000
+init.class=1
+elev_popmetrics_df=NULL
+its=1000
+
+for(ii in 1:length(elev_db$mat)){
+  
+  if(ii%in%c(95,105,145)) { next } 
+  
+ #  skip_to_next <- FALSE
+  tmp <- elev_db[ii]
+  fullmat <- matA(tmp$mat)[[1]]
+  growthmat <- matU(tmp$mat)[[1]]
+  growthmat[1,] <- 0
+  # print(c(ii,tmp$Genus,tmp$Species))
+
+  # Note that print(b) fails since b doesn't exist
+  
+  # tryCatch(solve(fullmat), error = function(e) { skip_to_next <<- TRUE})
+  # if(skip_to_next) { next } 
+
+  # good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
+  #                         sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
+  #                         any(is.na(growthmat))|
+  #                         any(growthmat==1),
+  #                         FALSE,
+  #                         TRUE)
+
+  # good_growthmat = ifelse(is.singular.matrix(growthmat), FALSE, good_growthmat)
+  # good_growthmat=TRUE
+  
+  # if(good_growthmat){
+  
+    vec <- rep(0,ncol(growthmat))
+    vec[init.class] <- init.popsize
+    pop = matrix(data=NA,nrow=its,ncol=ncol(growthmat)+1)
+    lamvec <- vec
+    lamstore = rep(NA,its)
+    popt <- init.popsize
+    for(i in 1:1000){
+      
+      vec <- growthmat%*%vec
+      pop[i,1:ncol(growthmat)]=round(vec)
+      pop[i,(ncol(growthmat)+1)]=round(sum(vec,na.rm=T))
+
+      lamvec <- fullmat%*%lamvec
+      popt1 <- round(sum(lamvec))
+      lam <- popt1/popt
+      popt <- popt1
+      lamstore[i]<-lam
+    
+      }
+    lamstore<-lamstore[!is.nan(lamstore)&lamstore!=0]
+    # Long term pop growth rate
+    
+    tmp.lam1 <- lambda(fullmat)
+    tmp.lam2 <- prod(lamstore)^(1/length(lamstore))
+    # Net reproductive rate
+    # tmp.NRR1 <- net.reproductive.rate(fullmat)
+    
+    tmp.NRR <- calc.ro(fullmat)
+    
+    # Find the proportion of the initial population remaining at each timestep
+    remaining.pop <- pop[,ncol(growthmat+1)]/init.popsize
+    
+    # At what timestep is less than 50% of the initial population remaining?
+    mean_long <- round(min(which(remaining.pop<=0.5)))
+    if(mean_long==Inf) print(c(ii,"Inf mean"))
+
+    # When is less than 95% of the initial population remaining
+    max_long <- round(min(which(remaining.pop<=0.01)))
+    if(max_long==Inf) print(c(ii,"Inf max"))
+    
+    tmp_df <- data.frame(species=paste(tmp$Genus,tmp$Species,sep = "."),
+                          elevation=tmp$Altitude,
+                          latitude=tmp$Lat,
+                          # mean_ls1=mean_long,
+                          mean_ls = lifespan(growthmat,init.popsize,0.5),
+                          # max_ls1=max_long,
+                          max_ls = lifespan(growthmat,init.popsize,0.01),
+                          rnot = round(tmp.NRR),
+                          # rnot2 = round(tmp.NRR2),
+                          popbiolambda=round(tmp.lam1,6),
+                          Gmeanlambda=tmp.lam2,
+                          eco_region = tmp$Ecoregion,
+                          matdim = tmp$MatrixDimension)
+   elev_popmetrics_df <- rbind(elev_popmetrics_df,tmp_df)
+    
+ #  }
+  
+  rm(tmp,fullmat,growthmat,vec,tmp_df,mean_long,max_long,tmp.lam1,tmp.lam2,tmp.NRR,remaining.pop,popt,popt1,lamstore,lam)
+}
+
+results_df <- elev_popmetrics_df %>% 
+  unique() %>% 
+  filter(Gmeanlambda<1.1 & Gmeanlambda>0.9) %>% 
+  mutate(log_max_ls=log(max_ls),
+         log_mean_ls=log(mean_ls))
+
+results_df$species <- as.factor(results_df$species)
+write_csv(results_df,paste0("Rmd/results/elev_diff_",min_elev_diff,".csv"))
+```
+
+# Visualize elev results
+```{r visresults}
+min_elev_diff=0
+results_df <- read_csv(paste0("Rmd/results/elev_diff_",min_elev_diff,".csv"))
+
+# ggplot(results_df,aes(x=elevation,y=mean_ls))+
+#   # geom_label(aes(label=species))+
+#   geom_point()+
+#   ggtitle("Mean Lifespan")+
+#   geom_smooth(method="lm")+
+#   theme_bw()
+# 
+# ggplot(results_df,aes(x=elevation,y=max_ls))+
+#   geom_label(aes(label=species))+
+#   geom_point()+
+#   ggtitle("Maximum lifespan")+
+#   geom_smooth(method='lm')+
+#   theme_bw()
+# 
+# ggplot(results_df,aes(x=elevation,y=lambda))+
+#   geom_point(aes(color=max_longevity))+
+#   theme_classic()
+# 
+# agg_results_df <- results_df %>% 
+#   dplyr::group_by(species,elevation,eco_region,matdim,latitude) %>% 
+#   dplyr::summarize(mean_longevity = mean(mean_ls),
+#             max_longevity = mean(max_ls))
+# 
+# ggplot(agg_results_df, aes(x=elevation,y=mean_longevity))+
+#   geom_point()+
+#   # geom_label(aes(label=species))+
+#   geom_smooth(method = "lm")+
+#   ggtitle("Species-Elevation aggregated mean lifespan")+
+#   theme_classic()
+# 
+# ggplot(agg_results_df, aes(x=elevation,y=max_longevity))+
+#   geom_point()+
+#   # geom_label(aes(label=species))+
+#   geom_smooth(method = "lm")+
+#   ggtitle("Species-Elevation aggregated maximum lifespan")+
+#   theme_classic()
+# 
+
+par(mfrow = c(2,2))
+
+trendline(results_df$elevation,results_df$mean_ls,main = "Mean LS")
+trendline(results_df$elevation,results_df$max_ls,main = "Max LS")
+trendline(results_df$elevation,results_df$rnot,main = "Net Repro Rate")
+trendline(results_df$elevation,results_df$Gmeanlambda,main = "lambda")
+trendline(results_df$max_ls,results_df$rnot)
+trendline(results_df$mean_ls,results_df$rnot)
+```
+
+
+## Mean lifespan models (no log transform)
+```{r mean_models}
+
+# Compare elevation with and without latitude
+mean_ols1 <- lm(mean_ls~elevation, data=results_df)
+mean_ols2 <- lm(mean_ls~elevation + latitude, data=results_df)
+mean_ols3 <- lm(mean_ls~elevation*latitude, data=results_df)
+summary(mean_ols1)
+summary(mean_ols2)
+summary(mean_ols3)
+anova(mean_ols1,mean_ols2,mean_ols3)
+# elevation*latitude looks best
+
+mean_mm4 <- lmer(mean_ls~elevation*latitude + (1|species),data=results_df)
+mean_mm5 <- lmer(mean_ls~elevation*latitude + (1|species) + (1|eco_region),data=results_df)
+mean_mm6 <- lmer(mean_ls~elevation*latitude + (1|species) + (1|matdim), data=results_df)
+mean_mm7 <- lmer(mean_ls~elevation*latitude + (1|eco_region) + (1|species) + (1|matdim), data=results_df)
+
+anova(mean_mm4,mean_mm5,mean_mm6,mean_mm7) # mm6 has lowest AIC and mm7 has lowest BIC
+```
+
+## log Mean lifespan models (no log transform)
+```{r log_mean_models}
+
+# Compare elevation with and without latitude
+lmean_ols1 <- lm(log_mean_ls~elevation, data=results_df)
+lmean_ols2 <- lm(log_mean_ls~elevation + latitude, data=results_df)
+lmean_ols3 <- lm(log_mean_ls~elevation*latitude, data=results_df)
+summary(lmean_ols1)
+summary(lmean_ols2)
+summary(lmean_ols3)
+anova(lmean_ols1,lmean_ols2,lmean_ols3)
+# elevation*latitude looks best
+
+
+# elevation*latitude looks best
+lmean_mm4 <- lmer(log_mean_ls~elevation*latitude + (1|species),data=results_df)
+lmean_mm5 <- lmer(log_mean_ls~elevation*latitude + (1|species) + (1|eco_region),data=results_df)
+lmean_mm6 <- lmer(log_mean_ls~elevation*latitude + (1|species) + (1|matdim), data=results_df)
+lmean_mm7 <- lmer(log_mean_ls~elevation*latitude + (1|eco_region) + (1|species) + (1|matdim), data=results_df)
+
+anova(lmean_mm4,lmean_mm5,lmean_mm6,lmean_mm7) # mm7 has lowest AIC, mm6 has lowest BIC
+```
+
+## max lifespan models (no log transform)
+```{r max_models}
+
+# Compare elevation with and without latitude
+max_ols1 <- lm(max_ls~elevation, data=results_df)
+max_ols2 <- lm(max_ls~elevation + latitude, data=results_df)
+max_ols3 <- lm(max_ls~elevation*latitude, data=results_df)
+summary(max_ols1)
+summary(max_ols2)
+summary(max_ols3)
+anova(max_ols1,max_ols2,max_ols3)
+# elevation*latitude looks best
+
+max_mm4 <- lmer(max_ls~elevation*latitude + (1|species), data=results_df)
+max_mm5 <- lmer(max_ls~elevation*latitude + (1|species) + (1|eco_region), data=results_df)
+max_mm6 <- lmer(max_ls~elevation*latitude + (1|species) + (1|matdim), data=results_df)
+max_mm7 <- lmer(max_ls~elevation*latitude + (1|eco_region) + (1|species) + (1|matdim), data=results_df)
+
+anova(max_mm4,max_mm5,max_mm6,max_mm7) # Here, mm4 has lowest AIC and BIC values
+max_mm <- max_mm4
+```
+
+## log max lifespan models (no log transform)
+```{r log_max_models}
+
+# Compare elevation with and without latitude
+lmax_ols1 <- lm(log_max_ls~elevation, data=results_df)
+lmax_ols2 <- lm(log_max_ls~elevation + latitude, data=results_df)
+lmax_ols3 <- lm(log_max_ls~elevation*latitude, data=results_df)
+summary(lmax_ols1)
+summary(lmax_ols2)
+summary(lmax_ols3)
+anova(lmax_ols1,lmax_ols2,lmax_ols3)
+# elevation*latitude looks best
+
+
+# elevation*latitude looks best
+lmax_mm4 <- lmer(log_max_ls~elevation*latitude + (1|species), data=results_df)
+lmax_mm5 <- lmer(log_max_ls~elevation*latitude + (1|species) + (1|eco_region),data=results_df)
+lmax_mm6 <- lmer(log_max_ls~elevation*latitude + (1|species) + (1|matdim), data=results_df)
+lmax_mm7 <- lmer(log_max_ls~elevation*latitude + (1|eco_region) + (1|species) + (1|matdim), data=results_df)
+
+anova(lmax_mm4,lmax_mm5,lmax_mm6,lmax_mm7) # here mm6 is best
+
+lmax_mm <- lmax_mm6
+```
+
+
+# Visualize LMER results
+```{r LMERviz}
+sjPlot::tab_model(lmax_mm,
+                  show.re.var = TRUE,
+                  dv.labels = "Log(max lifespan) by elevation and latitude",
+                  digits=4)
+
+plot_model(lmax_mm,type="pred",terms = c("elevation","latitude"),show.data=T)+
+  theme_classic(base_size = 24)+
+  labs(y="log(maximum lifespan)", x="Elevation",color="Latitude",title="")
+ggsave("log_max_lifepspan.png",width = 7,height = 5)
+
+sjPlot::tab_model(max_mm,
+                  show.re.var = TRUE,
+                  dv.labels = "Log(max lifespan) by elevation and latitude",
+                  digits=4)
+```
+
+
+
+# Trade-offs
+```{r tradeoffs}
+
+rnot_maxls <- lm(rnot~elevation+max_ls, data=results_df)
+summary(rnot_maxls)
+
+```
+
+
+# Results PCA
+```{r elev_pca}
+
+results_df$species <- as.factor(results_df$species)
+results_df$eco_region <- as.factor(results_df$eco_region)
+summary(results_df)
+
+pca_df <- results_df[, unlist(lapply(results_df, is.numeric))]
+
+corrplot(cor(pca_df), method = "circle", type = 'upper')
+
+pca_res <- prcomp(pca_df, scale. = TRUE)
+
+autoplot(pca_res, data = results_df,
+         loadings = TRUE, loadings.label=TRUE,
+         loadings.colour='grey50',loadings.label.colour='darkred',
+         loadings.label.size = 5,alpha = 0.75)+
+  theme_classic()+
+  scale_color_viridis(option = "D")
+
+PCs <- as.data.frame(pca_res$x)
+PC_df <- cbind(PC1=PCs$PC1,PC2=PCs$PC2, results_df)
+
+trendline(PC_df$PC1,PC_df$log_max_ls)
+ggplot(PC_df,aes(x=PC1,y=log_max_ls))+
+  geom_point()+
+  #scale_color_viridis()+
+  geom_smooth(method="lm",se=T)+
+  # geom_label(aes(label=species))+
+  theme_classic(base_size=20)+
+  # geom_text(aes(x=-1.8,y=8,label="y = 0.707x + 2.660"),size=8)+
+  # geom_text(aes(x=-2.1,y=7.5,label="R^2=0.704, p<0.0001"),size=5.5)+
+  labs(x="PC1 (27.6%)", y = "Log(maximum lifespan)")
+
+ggsave("LS_pc1.png",width = 7,height = 5)
+
+
+trendline(PC_df$PC1, PC_df$elevation,xname="*PC1",yname="Elevation",
+          xlab="PC1 (27.6%)",ylab = "Elevation",cex.lab=1.5)
+
+ggplot(PC_df,aes(x=PC1,y=elevation))+
+  geom_point()+
+  #scale_color_viridis()+
+  geom_smooth(method="lm",se=T)+
+  # geom_label(aes(label=species))+
+  theme_classic(base_size=20)+
+  # geom_text(aes(x=-1.7,y=2700,label="y = 104.34x + 463.1"),size=8)+
+  # geom_text(aes(x=-2.1,y=2550,label="R^2=0.135, p<0.0001"),size=5.5)+
+  labs(x="PC1 (27.6%)", y = "Elevation")
+
+ggsave("elev_pc1.png",width = 7,height =5)
+
+results_df <- results_df %>% 
+  filter(rnot<60)
+trendline(results_df$log_max_ls,results_df$rnot, 
+          xlab = "log(maximum lifespan)",
+          ylab = "Net Reproductive Rate",
+          cex.lab=1.5,
+          eSize = 1.5)
+```
+
+
+# Latitude population metrics
+```{r lat_longevityLoop}
+
+init.popsize <- 100
+lat_popmetrics_df <- NULL
+
+for(ii in 1:length(compadredb_Esub$mat)){
+  
+  tmp <- compadredb_Esub[ii]
+  fullmat <- matA(tmp$mat)[[1]]
+  growthmat <- matU(tmp$mat)[[1]]
+  if(tmp$MatrixCriteriaAge=='YES'){
+    
+    growthmat[1,] <- 0
+    
+  } else{
+    
+    growthmat[1,2:ncol(growthmat)] <- 0
+    
+  }
+  clonemat <- matC(tmp$mat)[[1]]
+  
+  if(sum(clonemat)>0) print(sum(clonemat))
+  
+  good_growthmat = ifelse(any(colSums(growthmat,na.rm=T)>1)|
+                          sum(growthmat[,ncol(growthmat)],na.rm=T)>=1|
+                          any(is.na(growthmat))|
+                          any(growthmat==1),
+                          FALSE,
+                          TRUE)
+
+  good_growthmat = ifelse(is.singular.matrix(growthmat), FALSE, good_growthmat)
+  
+  if(good_growthmat){
+
+    initialvector <- rep(0,ncol(growthmat))
+    initialvector[1]<-init.popsize
+  
+    tmp.proj <- pop.projection(A = growthmat,n = initialvector,iterations = 1000)
+    tmp.pop.size <- round(tmp.proj$pop.sizes)
+    tmp.lam <- lambda(fullmat)
+    # tmp.T <- generation.time(fullmat)
+    tmp.T <- gen.time(fullmat)
+    tmp.NRR <- net.reproductive.rate(fullmat)
+    tmp.NRR2 <- calc.ro(fullmat)
+  
+    # Find the proportion of the initial population remaining at each timestep
+    remainingpop_SC2 <- tmp.pop.size/init.popsize
+    
+    # At what timestep is less than 50% of the initial population remaining?
+    mean_long <- round(min(which(remainingpop_SC2<0.5)))
+    if(mean_long==Inf) print(c(ii,"Inf mean"))
+    
+    # When is less than 95% of the initial population remaining
+    max_long <- round(min(which(remainingpop_SC2<0.01)))
+    if(max_long==Inf) print(c(ii,"Inf max"))
+    
+    tmp_df <- data.frame(species=paste(tmp$Genus,tmp$Species,sep = "."),
+                         latitude=tmp$Lat,
+                         elevation=tmp$Altitude,
+                         mean_longevity=mean_long,
+                         mean_longevity2 = lifespan(growthmat,init.popsize,0.5),
+                         max_longevity=max_long,
+                         max_longevity2 = lifespan(growthmat,init.popsize,0.01),
+                         #  gentime = round(tmp.T),
+                         NRR = round(tmp.NRR),
+                         lambda=round(tmp.lam,6),
+                         eco_region = tmp$Ecoregion,
+                         matdim = tmp$MatrixDimension)
+   lat_popmetrics_df <- rbind(lat_popmetrics_df,tmp_df)
+    
+    
+  }
+  rm(tmp,fullmat,growthmat,initialvector,tmp_df,max_long,mean_long,remainingpop_SC2,tmp.pop.size,tmp.lam,tmp.NRR,good_growthmat,clonemat)
+  
+}
+
+```
+
+
+
+
+
+
